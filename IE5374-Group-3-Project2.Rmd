@@ -1,0 +1,770 @@
+---
+title: "Project 2"
+author: "Group 3: Reha Patel, Niraj Sai Prasad, Sindhu Swaroop"
+date: "12/5/2021"
+geometry: margin=1.75cm
+output: pdf_document
+always_allow_html: true
+---
+
+```{r global-options, include=FALSE}
+knitr::opts_chunk$set(warning=FALSE, message=FALSE, echo = FALSE)
+```
+
+```{r import}
+library(knitr)
+library(ggplot2)
+library(forecast)
+library(tidyr)
+library(dplyr)
+library(tidyverse)
+library(lubridate)
+library(reshape2)
+library(cluster)
+library(factoextra)
+library(fpc)
+library(clValid)
+library(data.table)
+library(textdata)
+library(magrittr)
+library(stringr)
+library(lemon)
+library(tidytext)
+library(textdata)
+library(wordcloud)
+library(wordcloud2)
+library(RColorBrewer)
+library(webshot)
+library(htmlwidgets)
+```
+
+# Introduction
+
+In this report, we will be investigating prices obtained from developing world markets for various goods as obtained by the World Food Program. We acquired this dataset from Kaggle and it contains information such as country name, market name, commodity name, commodity price, etc. We will be analyzing the probabilities of specific events, how clusters form within the data, any semantic information hidden in text, and trends in prices over time.
+
+```{r read_file}
+#Read csv file
+food <- read.csv ("final_food.csv", na.strings = "")
+news <- read.csv ("india-news-headlines.csv", na.strings = "")
+```
+
+Prior to beginning any analysis, we set the theme for the plots and graphs to be used throughout the analysis. 
+
+```{r set_theme}
+set_theme <- theme(panel.grid.major = element_blank(), 
+                   panel.grid.minor = element_blank(), 
+        plot.background = element_rect(fill = "black", color="black"), 
+        plot.title = element_text(color="white", face="bold"),
+        panel.background = element_rect(fill = "black", colour = "black"), 
+        legend.background = element_rect(fill = "black"), 
+        legend.key = element_rect(fill = "black"), 
+        legend.text = element_text(color="white", face="bold"),
+        axis.text.x = element_text(colour="white", face="bold"), 
+        axis.text.y = element_text(colour="white", face="bold"),
+        axis.title.x = element_text(colour="white", face="bold"),
+        axis.title.y = element_text(colour="white", face="bold"))
+```
+
+# Data Wrangling 
+
+## 1. Discovering 
+
+Before we begin our analysis, it is imperative that we have an understanding of the dataset itself. In order to do this, we will start off by listing out the names of the columns as well as viewing a single row of each columns using the head function. 
+
+``` {r D1}
+colnames(food)
+head(food, 1)
+```
+
+Here we see that the columns names are not descriptive and can potentially cause confusion later in the investigation. Later in the data wrangling process we will ensure that we rename the columns to be more descriptive of the data stored in them. We also see that there are columns for country name as well as the commodity being sold. Because this dataset only includes developing countries, it is important to understand how many distinct countries and commodities are found in it. We will do this by checking for the count of each distinct country (adm0_name) and commodity (cm_name). 
+
+```{r D2}
+kable(
+  food %>% 
+  distinct(adm0_name) %>% summarise(total_records=n())
+  ,caption = "Total Unique Countries Listed")
+
+kable(
+  food %>% 
+  distinct(cm_name) %>% summarise(total_records=n())
+  ,caption="Total Unique Commodities Listed")
+```
+
+The data source on Kaggle told us that it focuses on markets in developing countries. Using the head() function above we saw that Afghanistan was one of the country's listed, but now we will see how many records are listed for each of top 20 of the 74 distinct countries. This is important because later in our analysis, we may want to focus on one country and study the relationships within this country. 
+
+```{r D3}
+total_counts_country <- 
+  food %>% 
+    group_by(adm0_name) %>%
+    summarise(total_records=n()) %>% 
+    arrange(desc(total_records))
+
+top_countries <- head(total_counts_country, 20)
+
+top_countries %>%
+  ggplot(aes(x= reorder(adm0_name, -total_records), y = total_records, 
+             fill=adm0_name))+
+  geom_bar(stat = "identity",position = "dodge", show.legend = FALSE) + 
+  labs(title="Total Count of Prices Listed by Country", 
+       x = "Country Name", y = "Count") + 
+  theme(axis.text.x = element_text(hjust = 1, angle = 45))+
+  set_theme
+```
+
+Based on the table above, we see that Rwanda, India, Niger, Mali, and the Democratic Republic of the Congo are the five countries with the most commodity observations in the dataset. If we choose to perform an analysis on a single country or on a group of countries, these five would be viable options. Next we will look at similar counts, but instead we will look at the top 20 by the type of commodity.
+
+```{r D4}
+total_counts_commodity <- 
+  food %>% 
+    group_by(cm_name) %>%
+    summarise(total_records=n()) %>% 
+    arrange(desc(total_records))
+
+top_commodities <- head(total_counts_commodity, 20)
+
+top_commodities %>%
+  ggplot(aes(x= reorder(cm_name, -total_records), y = total_records, 
+             fill=cm_name))+
+  geom_bar(stat = "identity",position = "dodge", show.legend = FALSE) + 
+  labs(title="Total Count of Prices Listed by Commodity", 
+       x = "Commodity Name", y = "Count") + 
+  theme(axis.text.x = element_text(hjust = 1, angle = 45)) + 
+  set_theme
+```
+
+Of the 321 unique commodities found in the dataset, these are the top 20. Similar to the top countries, these 20 commodities would be suitable for individual or group analysis. 
+
+## 2. Cleaning 
+
+To begin the cleaning process we will first address the column names. As mentioned previously, the column names are not descriptive and can potentially cause confusion later in the investigation. In order to avoid any confusion, we will rename the columns to more appropriate values.
+
+```{r C1}
+colnames(food) <- c('Country_ID', 'Country_Name', 'Locality_ID', 'Locality_Name',
+                    'Market_ID', 'Market_Name', 'Commodity_ID', 'Commodity_Name', 
+                    'Currency_ID', 'Currency_Name', 'Market_Type_ID', 'Market_Type',
+                    'Measurement_ID', 'Unit_of_Goods', 'Month', 'Year', 'Price',
+                    'Commodity_Source', 'USD')
+colnames(food)
+```
+
+When observing the different rows in the dataframe, we noticed that some locality names were preceded by a dollar sign. In order to avoid any errors later in our analysis because "$" is also a symbol used in R, we will remove it from the data. 
+
+```{r C2}
+# Showing the presence of the "$"
+dollar_example <- food %>% 
+  filter(Locality_Name %like% "\\$")
+
+head(dollar_example, 1)
+
+food$Locality_Name = gsub("\\$", "", food$Locality_Name)
+
+# Checking there is no "$"
+food %>% 
+  filter(Locality_Name %like% "\\$")
+```
+
+
+## 3. Enriching 
+
+As a part of the enriching process, we converted the prices found in the dataset to USD. This step took about 3 hours to complete, so it was done prior to loading the dataset in order to avoid having to constantly run the block. This was important to our analysis because it would allow us to compare the prices of commodities across countries where the currencies may differ. Here is the code which was used to convert the commodity prices to USD: 
+
+```{r E1}
+#library(quantmod)
+# 
+#k <- vector("list", length = nrow(food))
+# 
+#for(i in 1:nrow(food)){
+#  k[[i]] <- (getQuote(paste0(food$Currency_Name[i], "USD", "=X"))$Last) * food$Price[i]
+# }
+# food$USD <- k
+```
+
+
+In addition to this, we checked for instances when the price of the commodity equaled 0 or NaN. This would impact the average prices of a commodity so it was important to remove it. Additionally, we removed country names, country IDs, locality names, locality IDs, commodity names, and commodity IDs which were NaN. Including these could potentially impact our analysis so it was important to remove them. 
+
+```{r E2}
+# check for commodities where the price = 0
+unique(food$Price == 0)
+
+# remove the commodities where the price = 0
+food <- subset(food, food$Price!=0)
+
+# confirm the commodities where price = 0 were removed
+unique(food$Price == 0)
+
+# remove the NaN values from the columns mentioned above
+food <- subset(food, !(is.na(food$Country_ID)))
+food <- subset(food, !(is.na(food$Country_Name)))
+food <- subset(food, !(is.na(food$Locality_ID)))
+food <- subset(food, !(is.na(food$Locality_Name)))
+food <- subset(food, food$Locality_Name!="NA")
+food <- subset(food, !(is.na(food$Commodity_ID)))
+food <- subset(food, !(is.na(food$Commodity_Name)))
+
+```
+
+## 4. Validating 
+
+Finally, we will perform some validating steps on our dataset. This will include ensuring that the NaN values discovered above were truly removed. We will also ensure that the prices of commodities were non-negative numbers because that would indicate errors in the data. 
+
+```{r V1}
+unique(is.na(food$Country_ID))
+unique(is.na(food$Country_Name))
+unique(is.na(food$Locality_ID))
+unique(is.na(food$Locality_Name))
+unique(is.na(food$Commodity_ID))
+unique(is.na(food$Commodity_Name))
+
+unique(food$Price<0)
+```
+
+# Business Questions 
+
+## Probability 
+
+### Question 1: What is the probability that the price trends across all countries in this dataset are descreasing over the years?
+
+
+We first selected all the unique countries in our dataset, and then found the average of the earliest prices of commodities for a particular country. We compared this with the most recent prices of commodities for the same country by assigning 1 if its greater, and 0 if lesser - then based on count of 1s, we found the required probability.
+
+```{r BQ1}
+countryList1 <- unique(food %>% select(Country_Name))
+oldest <- c()
+latest <- c()
+for(i in 1:nrow(countryList1))
+{
+  old <- head(food %>% subset(Country_Name == countryList1[[1]][i]) %>% 
+                group_by(Year) %>% summarise(mean(USD)), 1)[2]
+  new <- tail(food %>% subset(Country_Name == countryList1[[1]][i]) %>%
+                group_by(Year) %>% summarise(mean(USD)), 1)[2]
+  oldest <- c(oldest, old)
+  latest <- c(latest, new)
+}
+final_df <- (cbind(unname(unlist(countryList1)), unname(unlist(oldest)), unname(unlist(latest))))
+colnames(final_df) <- c("Country_Name", "OldPrice", "NewPrice")
+boolVal <- c()
+for (i in 1:nrow(final_df)){
+  if(final_df[,"OldPrice"][i] > final_df[,"NewPrice"][i]){
+    boolVal <- c(boolVal, 0)
+  }
+  else{
+    boolVal <- c(boolVal, 1)
+  }}
+1 - sum(boolVal)/length(boolVal) #Probability that earlier prices are more than recent prices?
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the calculation above: 
+
+* The probability that prices decrease over time across all countries is ~ 0.17. 
+* This is an expected value because the dataset has mostly developing countries. Inflation leads to increase in prices. 
+* 17% of the countries that do show decreasing trends could be improving in terms of trade, localized farming, and many other factors. 
+
+
+### Question 2: In the United States it is not uncommon for prices of goods and services to be higher in bigger cities. Do developing countries face a similar scenario? What is the probability that commodities are more expensive in the capital city than in the other cities across all countries in the dataset?
+
+First we wrote code to get K values. K values sum up to find the final probability for all countries. The function basically adds the capital city data column to our main dataframe and assigns the isCapital values [0,1]. This dataframe also returns the h value to store 0s and 1s into a list. 
+
+```{r BQ2a}
+# K is used to calculate final probability
+k <<- 0
+# List of 1's and 0's
+`Avg(Capital) > Avg(Rest)` <<- c()
+
+# function to get k values
+getProbabilityValue <- function(CountryName){
+  AFG <- ccfood %>% subset(Country_Name == CountryName)
+  for(i in 1:nrow(AFG))
+  {
+    if(tolower(AFG$CapitalName[i]) %like% tolower(AFG$Locality_Name[i]))
+    {
+      AFG$isCapital[i] = 1
+    }
+    else
+    {
+      AFG$isCapital[i] = 0
+    }
+  }
+  X <- AFG %>% subset(isCapital == 0) %>% summarise(mean(Price)) #non-capital
+  Y <- AFG %>% subset(isCapital == 1) %>% summarise(mean(Price)) #capital
+  if(is.na(Y))
+  {
+    Y <- 0
+  }
+  if(is.na(X))
+  {
+    X <- 0
+  }
+  h <- 0
+  if(Y > X)
+  {
+    k <<- k + 1
+    h <- 1
+  }
+  else 
+  {
+    k <<- k
+    h <- 0
+  }
+`Avg(Capital) > Avg(Rest)` <<- c(`Avg(Capital) > Avg(Rest)`, h)
+return(k)
+}
+
+```
+
+Next we wrote the main code for BQ2. We took the country capitals from an external dataset. We merged this with the original dataset. Upon calling the function, we got the required probability. 
+
+```{r BQ2b}
+
+capitals <- read.csv("concap.csv") %>% select(1,2)
+
+colnames(capitals)[1] <- "Country_Name"
+
+countryCapital <- food %>% group_by(Country_Name) %>% summarise(Records = n())
+
+X <- merge(countryCapital, capitals, by = "Country_Name")
+
+ccfood <- merge(food, X, by = "Country_Name")
+
+SampleCountries <- unique(ccfood %>% select(Country_Name))
+
+for(i in 1:nrow(SampleCountries)){
+  getProbabilityValue(SampleCountries[[1]][i])
+  
+}
+
+probabilityReq <- k/nrow(SampleCountries)
+
+probabilityReq # Probability value
+
+kable(head(cbind(SampleCountries, `Avg(Capital) > Avg(Rest)`), 10))
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the graph and calculation above: 
+
+* In the US, commodities in the larger cities are slightly more expensive than in rural or suburban areas. Since most countries in our dataset are still developing, we tried to see if a similar commodity pricing trend is present. 
+* We found that almost 0.34 of the countries in our dataset have commodity pricing higher in the capital cities than in rural areas. This number again depends on a lot of factors (eg: geographic), so it is just a rough estimate. 
+* For instance, in India, New Delhi tends to average out lesser than the other areas. But in Afghanistan, prices in Kabul are much higher than in other districts. 
+ 
+### Question 3: A commodity should be priced almost equally across the world. But this is seldom the case owing to various reasons like political and economic storms on distant continents. Milk is one such commodity that is processed, refined and traded across the globe. What is the correlation between prices of milk in different countries?
+
+First, we found the correlation coefficient between the prices of milk in India and Pakistan over 3 years (2015-2017). We did this by filtering out only the rows corresponding to the commodity milk in the two countries, and making sure the month and year data is identical for both countries.
+
+```{r BQ3a}
+india_milk <- food %>% 
+  subset(Commodity_Name == "Milk (pasteurized)" & Country_Name == "India") %>% 
+  group_by(Year, Month, Country_Name) %>% 
+  summarize(Average_Price=mean(USD)) %>% 
+  subset(!((Year==2015 & (Month>=4 & Month<=9)) | (Year<2015) 
+           | (Year==2017 & Month>4)))
+
+pak_milk <- food %>% 
+  subset(Commodity_Name == "Milk" & Country_Name == "Pakistan") %>% 
+  group_by(Year, Month, Country_Name) %>% 
+  summarize(Average_Price=mean(USD)) %>% 
+  subset(!((Year==2014 & Month==12) | (Year==2012 & (Month==5 | Month==6))))
+
+cor(india_milk$Average_Price, pak_milk$Average_Price)
+```
+
+Next, we plotted the milk price variations in the two countries by month and faceted by year, for a clearer picture.
+
+``` {r BQ3b}
+milk <- rbind(india_milk, pak_milk)
+milk$Month <- factor(milk$Month, levels=c("1", "2", "3", "4", "5", "6", "7", 
+                                          "8", "9", "10", "11", "12"))
+
+milk %>%
+  ggplot(aes(x=Month, y=Average_Price, color=Country_Name, group=Country_Name)) +
+  geom_point()+
+  scale_color_brewer(palette = "Dark2")+
+  geom_line()+
+  labs(title = "Milk Prices - India vs. Pakistan", 
+       x = "Months", y = "Prices in USD") +
+  theme(axis.text.x = element_text(hjust = 1, angle=35)) +
+  set_theme + 
+  facet_grid(.~as.character(Year))
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the graph above: 
+
+* India and Pakistan are neighboring countries, so we would expect the milk prices to be roughly the same. However, on plotting the prices we observed that this is not the case.
+* There is a difference of 10 cents (in US currency) between the two countries, which amounts to a great deal when converted to local currencies, since milk is a daily commodity. However, despite the 10 cent difference, it appears in the plot that the price of milk tends to increase and decrease around the same time in both countries.
+* Nevertheless, we found a strong positive correlation between the milk prices in the two countries. Being on the same continent and next to each other, economic and political disturbances impact the prices in a similar way. The correlation coefficient was 0.908.  
+
+## Clustering 
+
+### Question 4: Oftentimes sellers and consumers would think that commodities across countries would be priced similarly, and thus clustered together. Use k-means to determine not only the optimal number of clusters, but also to determine whether there are any meaningful clusters across commodities and countries.
+
+First we had to run fviz_nbclust to determine the optimal number of clusters. We can find this "optimal number" based on where the elbow occurs in the graph below We see that at k = 6 the total within sum of squares seems to taper off. As a result, when we run k-means we will use k = 6.
+
+```{r BQ4a}
+set.seed(123) # setting the seed so the random sample is the same
+
+country_clust <- 
+  food %>%
+  select(c("Country_ID", "Commodity_ID", "Currency_ID", "Year"))
+
+country_clust <- sample_n(country_clust, 10000)
+country_scaled <- scale(country_clust)
+
+fviz_nbclust(country_scaled, kmeans, method = "wss") + set_theme
+```
+
+Next, we fitted the k-means clustering algorithm to the scaled data and visualized the clusters. In addition to this, we used an aggregate function to display the means of every cluster which helped us draw conclusions about the clustering. 
+
+```{r BQ4b}
+km.res <- kmeans(country_scaled, 6, nstart = 10)
+fviz_cluster(km.res, country_scaled, palette = "Dark2", ggtheme = set_theme)
+
+aggregate(country_clust, by=list(cluster=km.res$cluster), mean)
+```
+
+```{r BQ4c}
+ordered_countries <- food %>% 
+  distinct(Country_Name, Country_ID) %>% 
+  arrange(desc(Country_ID))
+kable(
+  head(ordered_countries, 5) ,caption="Countries with the Highest Country IDs")
+```
+
+```{r BQ4d}
+ordered_commodities <- food %>% 
+  distinct(Commodity_Name, Commodity_ID) %>% 
+  arrange(desc(Commodity_ID))
+kable(
+  head(ordered_commodities, 5) ,
+  caption="Commodities with the Highest Commodity IDs")
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the clustering analysis above: 
+
+* There are 6 color coded clusters which can be seen in the cluster plot above. Cluster 6 is distinct from clusters 1, 2, 3, 4, and 5.
+* Based on the aggregate function, we see that the mean Country_ID is around 50000 for one of the clusters. Based on the table Countries with the Highest Country IDs shown above, we can assume that the countries in this cluster would include South Sudan, Egypt and Sudan. 
+* An interesting observation about the previous point is that Egypt, Sudan, and South Sudan are all neighboring countries in Africa. It is possible that due to the close proximity that these countries have similar cultures and thus sell similar types of commodities in their markets. 
+* The Commodity_ID for one of the clusters is around 300, which is much higher than the other clusters. After looking at the Commodities with the Highest Commodity IDs table, we can assume that some of these are found in this cluster, which is driving up the mean commodity ID. 
+
+### Question 5: When examining a country specifically, it’s possible to see clusters appear by region. Using the localities and commodities found in India, perform k-medoids on the data to determine if the clusters can be identified as being regional.
+
+Similar to the previous business question, we looked for the elbow in this graph when the total within sum of squares seems to plateau off. Based on the graph below, it seemed that the elbow happened at k = 4, so when we ran k-medoids, we used 4 as the optimal number of clusters.
+
+```{r BQ5a}
+set.seed(123) # setting the seed so the random sample is the same
+
+region_clust <- 
+  food %>%
+  filter(Country_Name=="India") %>%
+  select(c("Locality_ID", "Commodity_ID", "Year"))
+
+region_clust <- sample_n(region_clust, 10000)
+
+region_scaled <- scale(region_clust)
+
+fviz_nbclust(region_scaled, pam, method = "wss") + set_theme
+```
+
+Next run the scaled data that includes localities/regions on the k-medoids/PAM algorithm and output the means of each of the 4 clusters. Similar to above, this will help us when drawing conclusions about why the data was clustered the way it was.
+
+```{r BQ5b}
+pam.res <- pam(region_scaled, 4)
+
+fviz_cluster(pam.res, region_scaled, palette = "Dark2", ggtheme = set_theme)
+
+aggregate(region_clust, by=list(cluster=pam.res$cluster), mean)
+```
+
+```{r ordered-localities}
+ordered_localities <- food %>% 
+  filter(Country_Name=="India") %>%
+  distinct(Locality_Name, Locality_ID) %>% 
+  arrange(desc(Locality_ID))
+
+kable(
+  head(ordered_localities, 10), 
+  caption="Indian Localities with the Highest Locality IDs")
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the clustering analysis above: 
+
+* There are 4 cluster plots produced by the analysis above. While each of the clusters seems to be distinct, there appears to be some overlap between clusters 1 and 3. 
+* The average locality ID for cluster 4 was much higher than the other three clusters. When looking at the table Indian Localities with the Highest Locality IDs, we can assume that cluster 4 may have Uttarkhand, Puducherry, Jharkhand and/or Chandigarh which is causing the average to be so high. 
+* After examining a map of India, it is noted that 3 of the 4 localities with the highest locality IDs are found in Northern India. It is possible that due to being in a similar region, these localities sell similar types of commodities in the markets.
+* Similar to the previous business question one of the clusters, cluster 3, has a high average commodity ID. We can assume that some of the commodities in cluster 3 are found in the Commodities with the Highest Commodity IDs table.
+
+## Time Series Analysis
+
+### Question 6: Maize is the commodity that is seen most often in the dataset and this could mean that it is available in most of the developing countries. Plot the time series of the price of maize in the 3 countries with the greatest number of commodities listed in the dataset.
+
+```{r BQ6}
+ID <- 1992:2017
+
+food %>% 
+  subset(Commodity_Name=="Maize") %>%
+  subset(Country_Name=="Rwanda" | Country_Name == "Niger" | Country_Name == "Mali") %>% 
+  group_by(Year, Country_Name) %>% 
+  summarise(Average_Price=mean(Price)) %>%
+  ggplot(aes(x=Year, y=Average_Price, color=Country_Name)) +
+  geom_line()+
+  labs(x="Year", y="Average Price", 
+       title = "Annual Plot: Maize Prices in Top Countries")+
+  facet_grid(Country_Name~.)+
+  theme(axis.text.x = element_text(hjust = 1, angle = 70))+
+  scale_x_continuous("Year", labels = as.character(ID), breaks = ID) +
+  set_theme
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the time series line graph above: 
+
+* The overall trend of the price of maize has been increasing regardless of when the data begins. 
+* While the overall trend is that the price is increasing, we see that the price of maize tends to dip and spike around the same year regardless of the country. In fact, a spike for a year or two is typically followed by a drop for a year or two. 
+* In 2010 we see a dip in all 3 countries and in 2012 we see a spike in all 3 countries. After doing further analysis, it was discovered that a drought in the U.S. in 2012 led to a surge in global corn prices. 
+
+### Question 7: Potatoes are a popular commodity found in many countries. Because it is a seasonal crop, potatoes may display fluctuations throughout a calendar year. Plot the time series by month of the price of potatoes to see if there is a specific time of year when it is most expensive in the markets.
+
+```{r BQ7}
+potatoes_delhi <- food %>% 
+  subset(Commodity_Name=="Potatoes" & Market_Name=="Delhi") %>% 
+  select(Month, Year, USD) 
+  
+timeseries <- 
+  ts(potatoes_delhi[, "USD"], start = c(2012,4), end = c(2017,6), frequency = 12)
+
+window(timeseries, start=c(2013, 1), end=c(2017, 6)) %>%
+  ggseasonplot() + 
+  labs(title="Seasonal Plot: Potato Prices in Delhi, India", 
+       x = "Months", y = "Prices in USD")+
+  set_theme
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the time series line graph above: 
+
+* Potatoes are a popular vegetable in Northern India - so we chose Delhi for our time series analysis. The time series of Potato prices in Delhi follows a similar seasonal distribution across 5 years from 2013 till 2017. The potato prices peak once in April/May, rise higher in August/September and are low at the end of the year as well as the beginning of the year. 
+* Potatoes require cool but frost-free weather, so in tropical regions such as India, they are mostly grown in winters. This explains the lows in the price from November to February, the "season" for potatoes.  
+* April/May in India is the peak summer season, scorching hot temperatures are unfavorable for cultivation of potatoes. This justifies the first peak in the prices.
+* August/September is when the monsoon season kicks in. Heavy rains make the soil wet and cause the potato seeds to decay, hence throwing light on why potato prices in India peak during this time of year.  
+
+## Text Analysis 
+
+### Question 8: We have observed that certain commodities are more predominant in specific countries. Based on this, perform a text analysis to determine statistical measures such as term frequency. Doing this will allow consumers and sellers to determine the most common commodities in a country. 
+
+First, we found the commodities sold in India, tokenized them into one word per row, and removed the duplicates. The resulting data frame had just the commodity names.
+
+```{r BQ8a}
+commodities <- unique((subset(food, Country_Name == "India"))$Commodity_Name)
+commodities <- data.frame(commodities)
+commodities$row_num <- seq.int(nrow(commodities))
+
+commodities <- commodities %>%
+    unnest_tokens(word, commodities)
+
+commodities <- commodities[!duplicated(commodities$row_num), ]
+commodities <- commodities[!duplicated(commodities$word), ]
+```
+
+Next, we filtered out all the news headlines related to the commodities sold in India, from the news headlines dataset. Then, we tokenized them, removed all the stop words and performed sentiment analysis using the method - "nrc" on the data frame.
+
+```{r BQ8b}
+news_commodities<-news[((news$headline_text %like% " rice ") | 
+                (news$headline_text %like% " wheat ") |
+                (news$headline_text %like% " lentils ") |
+                (news$headline_text %like% " potatoes ") |
+                (news$headline_text %like% " sugar ") |
+                (news$headline_text %like% " tomatoes ") |
+                (news$headline_text %like% " onions ") |
+                (news$headline_text %like% " tea ") |
+                (news$headline_text %like% " oil ") |
+                (news$headline_text %like% " ghee ") |
+                (news$headline_text %like% " salt ") |
+                (news$headline_text %like% " milk ")), ]
+
+news_commodities$row_num <- seq.int(nrow(news_commodities))
+
+news_commodity_words <- news_commodities %>%
+    unnest_tokens(word, headline_text)
+
+data(stop_words)
+news_commodity_words <- news_commodity_words %>%
+  anti_join(stop_words)
+
+news_sentiment <- news_commodity_words %>%
+  inner_join(get_sentiments("nrc")) %>%
+  count(index = row_num, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+kable(head(news_sentiment,10), 
+      caption="Sentiment Analysis of Commodity News Headlines")
+```
+
+We then calculated the term frequency of each of the commodity words in the commodity news headlines by finding the total number of words and dividing the count of each commodity word by the total. We also plotted the histogram of term frequencies and a bar chart of word counts of each commodity for visualization.
+
+```{r BQ8c}
+news_word_freq <- news_commodity_words %>%
+  count(word, sort = TRUE)
+
+news_com_freq<-news_word_freq[((news_word_freq$word == "rice") | 
+                (news_word_freq$word == "wheat") |
+                (news_word_freq$word == "lentils") |
+                (news_word_freq$word == "potatoes") |
+                (news_word_freq$word == "sugar") |
+                (news_word_freq$word == "tomatoes") |
+                (news_word_freq$word == "onions") |
+                (news_word_freq$word == "tea") |
+                (news_word_freq$word == "oil") |
+                (news_word_freq$word == "ghee") |
+                (news_word_freq$word == "salt") |
+                (news_word_freq$word == "milk")), ]
+
+total_words <- news_word_freq %>% 
+  summarize(total = sum(n))
+news_com_freq <- cbind(news_com_freq, total_words)
+news_com_freq$term_frequency <- round(news_com_freq$n/news_com_freq$total, 4)
+
+kable(news_com_freq, caption="Term Frequency of Commodity Words in Commodity News Headlines")
+
+ggplot(news_com_freq, aes(n/total)) +
+  geom_histogram(fill="maroon")+labs(title="Histogram of Term Frequencies", x = "Term Frequency", y = "Count") +
+  set_theme
+
+ ggplot(news_com_freq, aes(x=reorder(`word`, n), y=n)) +
+  geom_bar(stat="identity", aes(fill=word))+
+   labs(title="Word Counts in News Headlines", x = "Commodities", y = "Word Counts")+
+  scale_fill_manual(values=c("oil"="#482677FF", "milk"="#453781FF", 
+                             "sugar"="#404788FF", "tea"="#39568CFF", 
+                             "rice"="#33638DFF", "wheat"="#287D8EFF", 
+                             "salt"="#1F968BFF", "onions"="#29AF7FFF", 
+                             "ghee"="#55C667FF", "potatoes"="#95D840FF", 
+                             "tomatoes"="#B8DE29FF", "lentils"="#FDE725FF"))+
+   coord_flip()+
+  set_theme
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the text analysis above: 
+
+* The news headlines in India feature commodities many a times, with reference to the increasing prices and exports/imports to name a few. We found an Indian news headlines dataset and performed text analysis on this which revealed some interesting results.  
+* We performed Sentiment Analysis on commodity news headlines and found a blend of positive and negative news. Negative news included headlines on increasing prices, smuggling rackets and food adulteration. Positive news took into consideration headlines on arresting of smugglers, government undertakings of distribution of free commodities to the poor, best trading firms and so on.  
+* We found the Term Frequency of only the "commodity words" in the commodity news headlines. From this we were able to infer that the most common commodities in India that make it to the headlines are Oil, Milk, Sugar and Tea in decreasing order of occurrence. The least common commodity in the headlines was Lentils.  
+* We plotted a histogram of Term Frequency to see which words' appearances are equally frequent. Oil had the highest term frequency, followed by milk, sugar and tea having term frequencies close to each other. Ghee, Potatoes and Tomatoes had almost the same term frequency, which means their appearance in the headlines was equally frequent - hence, the histogram bar of value 3.  
+* We also plotted a bar graph of Commodity names vs. word counts for a clearer visualization of occurrences of commodities in news headlines.  
+
+### Question 9: India is one of the countries in the dataset with the most number of observations as well as news headlines. After coming across a dataset with the news headlines, determine which headlines are related to the commodities in the dataset. Of those, which headlines are related to the direction of price movements?
+
+We first found the commodities sold in India, tokenized them into one word per row, and removed the duplicates. The resulting data frame had just the commodity names. 
+
+```{r BQ9a}
+news <- read.csv('india-news-headlines.csv')
+commodities <- unique((subset(food, Country_Name == "India"))$Commodity_Name)
+commodities <- data.frame(commodities)
+commodities$row_num <- seq.int(nrow(commodities))
+
+commodities <- commodities %>%
+    unnest_tokens(word, commodities)
+
+commodities <- commodities[!duplicated(commodities$row_num), ]
+commodities <- commodities[!duplicated(commodities$word), ]
+
+news_commodities <- news[((news$headline_text %like% " rice ") | 
+                (news$headline_text %like% " wheat ") |
+                (news$headline_text %like% " lentils ") |
+                (news$headline_text %like% " potatoes ") |
+                (news$headline_text %like% " sugar ") |
+                (news$headline_text %like% " tomatoes ") |
+                (news$headline_text %like% " onions ") |
+                (news$headline_text %like% " tea ") |
+                (news$headline_text %like% " oil ") |
+                (news$headline_text %like% " ghee ") |
+                (news$headline_text %like% " salt ") |
+                (news$headline_text %like% " milk ")), ]
+```
+
+To find the increasing and decreasing trends, we keyed in a few popular terms that we know of to get a rough estimate and saved it into a df. We then added a new column with a 1 for increased trends, and 0 for decreased trends. We then split the bool values into a seperate column. 
+
+```{r BQ9b}
+news_commodities_status <- news_commodities[((news_commodities$headline_text %like% " increase ") | 
+                (news_commodities$headline_text %like% " decrease ") |
+                (news_commodities$headline_text %like% " rises ") |
+                (news_commodities$headline_text %like% " raised ") |
+                (news_commodities$headline_text %like% " increased ") |
+                (news_commodities$headline_text %like% " decreased ") |
+                (news_commodities$headline_text %like% " higher ") |
+                (news_commodities$headline_text %like% " lowered ") |
+                (news_commodities$headline_text %like% " high ") |
+                (news_commodities$headline_text %like% " low ") |
+                (news_commodities$headline_text %like% " highest ") |
+                (news_commodities$headline_text %like% " lowest ") |
+                (news_commodities$headline_text %like% " slashed ")), ]
+
+news_commodities_status <- news_commodities_status %>% 
+  mutate(
+    `Increase/Decrease` = case_when(
+ news_commodities_status$headline_text %like% " increase " ~ "increase1",
+ news_commodities_status$headline_text %like% " decrease " ~ "decrease0",
+ news_commodities_status$headline_text %like% " rises " ~ "rises1",
+ news_commodities_status$headline_text %like% " raised " ~ "raised1",
+ news_commodities_status$headline_text %like% " increased " ~ "increased1",
+ news_commodities_status$headline_text %like% " decreased " ~ "decreased0",
+ news_commodities_status$headline_text %like% " higher " ~ "higher1",
+ news_commodities_status$headline_text %like% " lowered " ~ "lowered0",
+ news_commodities_status$headline_text %like% " high " ~ "high1",
+ news_commodities_status$headline_text %like% " low " ~ "low0",
+ news_commodities_status$headline_text %like% " highest " ~ "highest1",
+ news_commodities_status$headline_text %like% " lowest " ~ "lowest0",
+ news_commodities_status$headline_text %like% " slashed " ~ "slashed0",
+ 
+ TRUE ~ "other"
+  )
+)
+  
+news_commodities_status$row_num <- seq.int(nrow(news_commodities_status))
+
+
+for(i in 1:nrow(news_commodities_status))
+{
+  news_commodities_status$Bool[i] <- str_sub(news_commodities_status$`Increase/Decrease`[i], (nchar(news_commodities_status$`Increase/Decrease`[i])), 
+            (nchar(news_commodities_status$`Increase/Decrease`[i])))
+  
+  news_commodities_status$`Increase/Decrease`[i] <- 
+    str_sub(news_commodities_status$`Increase/Decrease`[i], 1, 
+            (nchar(news_commodities_status$`Increase/Decrease`[i])-1))
+  
+}
+```
+
+We plotted a wordcloud to get a visual of how the trends appear in our dataset. We also have a kable for number of increasing and decreasing trends. 
+
+```{r BQ9c}
+kable(news_commodities_status %>% group_by(Bool) %>% summarise(count = n()))
+
+df_cloud <- news_commodities_status %>%
+  count(`Increase/Decrease`)
+
+wordcloud2(df_cloud, color = 'random-light', backgroundColor = "black")
+```
+
+#### Observations & Conclusions
+
+We made the following observations from the text analysis above: 
+
+* Based on the Kable, increasing trends are much higher than decreasing trends for Indian commodity prices. 
+* We can conclude that the price trends in India are usually increasing based on the popularity of words in the word-cloud. 
+* Since India is still not a developed country, we can expect this trend to continue for quite some time. 
+* Due to inflation, prices tend to go up. Once India becomes developed like the US and stabilizes, we can expect the prices to remain more or less the same. 
+
+# Conclusion 
+
+Throughout this project we analyzed probabilities, where and how clusters form in the data, the presence of commodities in the news, and trends in prices over time. Consumers and sellers would be able to use our analysis to determine things like in which month potatoes would generally be most expensive to buy. While the seasonal difference in prices of commodities like potatoes may not make much of a difference to most individuals in developed countries, the difference may be significant enough for some individuals in developing countries. In addition to this, we found that countries around the world and localities in India were more likely to be clustered together if they were closer to each other. This would mean that countries and localities within one cluster had commodities that were more similarly priced. A major conclusion we drew throughout our analysis was that the general trend of commodity prices is increasing, which means inflation is high in developing countries. We saw this in the rise in prices of maize and milk, for example.
